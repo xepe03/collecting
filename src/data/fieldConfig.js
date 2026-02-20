@@ -9,7 +9,7 @@ export const DEFAULT_FIELD_OPTIONS = [
   {
     key: 'price',
     type: 'price',
-    label: '가격',
+    label: '구매가격',
     disabled: false,
   },
   {
@@ -31,16 +31,22 @@ export const DEFAULT_FIELD_OPTIONS = [
     disabled: false,
   },
   {
+    key: 'quantity',
+    type: 'number',
+    label: '수량',
+    disabled: false,
+  },
+  {
     key: 'series',
     type: 'series',
     label: '시리즈',
-    disabled: true,
+    disabled: false,
   },
   {
     key: 'marketPrice',
     type: 'marketPrice',
     label: '시세',
-    disabled: true,
+    disabled: false,
   },
   {
     key: 'memo',

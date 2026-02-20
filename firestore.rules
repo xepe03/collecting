@@ -1,14 +1,97 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /shared/{token} {
-      allow read: if true;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId
-        || (resource.data.expiresAt != null && request.time > resource.data.expiresAt);
+    
+    // 헬퍼 함수
+    function signedIn() { 
+      return request.auth != null; 
     }
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    
+    function isOwnerUid(uid) { 
+      return signedIn() && request.auth.uid == uid; 
+    }
+    
+    function validVisibility(v) { 
+      return v in ['public', 'private']; 
+    }
+    
+    // 공유 컬렉션 (실시간 동기화)
+    match /collections/{collectionId} {
+      // 오너만 create, ownerUid와 visibility 검증
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && validVisibility(request.resource.data.visibility);
+      
+      // ownerUid 불변 강제 + visibility 값 검증
+      allow update: if signedIn()
+        && request.auth.uid == resource.data.ownerUid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && validVisibility(request.resource.data.visibility);
+      
+      allow delete: if signedIn() && request.auth.uid == resource.data.ownerUid;
+      
+      // public이면 누구나 read (로그인 여부 상관 없음)
+      // private이면 오너만 read
+      allow read: if resource.data.visibility == 'public' 
+        || (signedIn() && request.auth.uid == resource.data.ownerUid);
+    }
+    
+    // 공유 컬렉션의 아이템들
+    match /collections/{collectionId}/items/{itemId} {
+      function parent() {
+        return get(/databases/$(database)/documents/collections/$(collectionId)).data;
+      }
+      
+      function parentExists() {
+        return exists(/databases/$(database)/documents/collections/$(collectionId));
+      }
+      
+      function canRead() {
+        return parent().visibility == 'public' 
+          || (signedIn() && parent().ownerUid == request.auth.uid);
+      }
+      
+      function canWrite() {
+        return signedIn() 
+          && parentExists() 
+          && parent().ownerUid == request.auth.uid;
+      }
+      
+      allow read: if parentExists() && canRead();
+      allow create, update, delete: if canWrite();
+    }
+    
+    // 사용자별 개인 컬렉션 (기존 구조 유지)
+    match /users/{userId}/collections/{collectionId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    
+    // 사용자별 개인 아이템
+    match /users/{userId}/items/{itemId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    
+    // 사용자별 그룹
+    match /users/{userId}/groups/{groupId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    
+    // 사용자 프로필 문서
+    match /users/{userId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      
+      // uid 불변 강제
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId;
+      
+      // uid 불변 강제 (update에서도 request.resource.data.uid 검증)
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && resource.data.uid == userId
+        && request.resource.data.uid == userId;
+      
+      allow delete: if signedIn() && request.auth.uid == userId;
     }
   }
 }

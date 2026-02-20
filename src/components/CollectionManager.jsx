@@ -13,12 +13,17 @@ import {
 } from '../data/fieldConfig'
 import Sidebar from './Sidebar'
 import MainContent from './MainContent'
+import ColorPicker from './ColorPicker'
 
 export default function CollectionManager() {
   const {
     userId,
+    user,
+    userProfile,
+    authReady,
     collections,
     items,
+    groups,
     loaded,
     error,
     addCollection,
@@ -27,6 +32,11 @@ export default function CollectionManager() {
     addItem,
     updateItem,
     deleteItem,
+    addGroup,
+    updateGroup,
+    deleteGroup,
+    updateUserProfile,
+    deleteAllUserData,
   } = useCollectionData()
 
   const [selectedCollection, setSelectedCollection] = useState(null)
@@ -36,13 +46,16 @@ export default function CollectionManager() {
   const [showCollectionModal, setShowCollectionModal] = useState(false)
   const [showCollectionEditModal, setShowCollectionEditModal] = useState(false)
   const [showCollectionDeleteModal, setShowCollectionDeleteModal] = useState(false)
+  const [showCollectionGroupModal, setShowCollectionGroupModal] = useState(false)
+  const [groupSelectCollectionId, setGroupSelectCollectionId] = useState(null)
   const [shareToast, setShareToast] = useState(null)
   const [newCollectionParent, setNewCollectionParent] = useState(null)
   const [viewMode, setViewMode] = useState('card') // 'card' | 'excel'
-  const [sortBy, setSortBy] = useState('latest') // 'latest' | 'price' | 'name'
+  const [sortBy, setSortBy] = useState('latest') // 'latest' | 'price'
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearchInput, setShowSearchInput] = useState(false)
   const [showProfileView, setShowProfileView] = useState(false)
+  const [filters, setFilters] = useState({})
 
   // 첫 컬렉션 선택
   useEffect(() => {
@@ -91,6 +104,77 @@ export default function CollectionManager() {
     return 0
   }
 
+  // 필터링 로직
+  const filterItems = (itemList) => {
+    let filtered = [...itemList]
+
+    // 등급 필터
+    if (filters.gradeType) {
+      filtered = filtered.filter((item) => {
+        const gradeValue = item.fields?.grade || item.fields?.['등급(PSA,BGS)'] || ''
+        if (!gradeValue) return false
+        
+        // 저장 형식: "PSA 10" 또는 "PSA10" 모두 지원
+        // 공백을 제거하고 비교
+        const gradeStr = String(gradeValue).replace(/\s+/g, '').trim()
+        
+        // 등급 타입으로 시작하는지 확인
+        const startsWithType = gradeStr.startsWith(filters.gradeType)
+        
+        if (!startsWithType) return false
+        
+        // 숫자도 선택했다면 정확히 일치하는지 확인
+        if (filters.gradeNumber) {
+          const expectedGrade = `${filters.gradeType}${filters.gradeNumber}`
+          return gradeStr === expectedGrade
+        }
+        
+        // 숫자를 선택하지 않았다면 해당 타입의 모든 등급 허용
+        return true
+      })
+    }
+
+    // 가격 범위 필터
+    if (filters.priceMin || filters.priceMax) {
+      filtered = filtered.filter((item) => {
+        const price = parsePrice(item)
+        if (filters.priceMin && price < parseInt(filters.priceMin)) return false
+        if (filters.priceMax && price > parseInt(filters.priceMax)) return false
+        return true
+      })
+    }
+
+    // 언어 필터
+    if (filters.language && filters.language.length > 0) {
+      filtered = filtered.filter((item) => {
+        const langValue = item.fields?.language || item.fields?.언어 || ''
+        return filters.language.some((l) => String(langValue).includes(l))
+      })
+    }
+
+    // 구매기간 필터
+    if (filters.purchaseDateStart || filters.purchaseDateEnd) {
+      filtered = filtered.filter((item) => {
+        const purchaseDate = item.fields?.purchaseDate || item.fields?.구매일 || ''
+        if (!purchaseDate) return false
+        const date = new Date(purchaseDate)
+        if (filters.purchaseDateStart && date < new Date(filters.purchaseDateStart)) return false
+        if (filters.purchaseDateEnd && date > new Date(filters.purchaseDateEnd)) return false
+        return true
+      })
+    }
+
+    // 시리즈 필터
+    if (filters.series && filters.series.length > 0) {
+      filtered = filtered.filter((item) => {
+        const seriesValue = item.fields?.series || item.fields?.['시리즈'] || ''
+        return filters.series.some((s) => String(seriesValue).trim() === String(s).trim())
+      })
+    }
+
+    return filtered
+  }
+
   const sortItems = (itemList) => {
     const sorted = [...itemList]
     if (sortBy === 'latest') {
@@ -98,13 +182,11 @@ export default function CollectionManager() {
       sorted.reverse()
     } else if (sortBy === 'price') {
       sorted.sort((a, b) => parsePrice(b) - parsePrice(a))
-    } else if (sortBy === 'name') {
-      sorted.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
     }
     return sorted
   }
 
-  const displayedItems = sortItems(filterItemsBySearch(getCurrentItems()))
+  const displayedItems = sortItems(filterItems(filterItemsBySearch(getCurrentItems())))
 
   const addNewItem = () => {
     setEditingItem({
@@ -117,33 +199,61 @@ export default function CollectionManager() {
   }
 
   const handleSaveItem = async (formData, imageFile) => {
-    if (!selectedCollection || !userId) return
+    if (!selectedCollection || !userId) {
+      console.error('❌ 아이템 저장 실패: selectedCollection 또는 userId가 없습니다', { selectedCollection, userId })
+      alert('컬렉션을 선택하거나 로그인해주세요.')
+      return
+    }
+    
+    if (!formData.name || !formData.name.trim()) {
+      alert('아이템 이름을 입력해주세요.')
+      return
+    }
+
     let imageUrl = formData.image || ''
 
     try {
       if (imageFile) {
+        console.log('📤 이미지 업로드 시작...')
         imageUrl = await uploadFile(imageFile, userId)
+        console.log('✅ 이미지 업로드 완료:', imageUrl)
       }
     } catch (e) {
-      console.error('이미지 업로드 실패:', e)
-      alert('이미지 업로드에 실패했습니다.')
+      console.error('❌ 이미지 업로드 실패:', e)
+      alert('이미지 업로드에 실패했습니다: ' + e.message)
       return
     }
 
     const itemData = {
-      name: formData.name,
+      name: formData.name.trim(),
       image: imageUrl,
       fields: formData.fields || {},
     }
 
-    const isEdit = editingItem?.id && items[editingItem.id]
-    if (isEdit) {
-      await updateItem({ ...itemData, id: editingItem.id })
-    } else {
-      await addItem(itemData, selectedCollection)
+    console.log('💾 아이템 저장 시도:', { itemData, selectedCollection, userId })
+
+    try {
+      const isEdit = editingItem?.id && items[editingItem.id]
+      if (isEdit) {
+        console.log('✏️ 아이템 수정 중...')
+        await updateItem({ ...itemData, id: editingItem.id })
+        console.log('✅ 아이템 수정 완료')
+      } else {
+        console.log('➕ 아이템 추가 중...')
+        await addItem(itemData, selectedCollection)
+        console.log('✅ 아이템 추가 완료')
+      }
+      setShowItemModal(false)
+      setEditingItem(null)
+    } catch (e) {
+      console.error('❌ 아이템 저장 오류:', e)
+      console.error('오류 상세:', {
+        code: e.code,
+        message: e.message,
+        stack: e.stack,
+      })
+      alert('아이템 저장에 실패했습니다: ' + (e.message || '알 수 없는 오류'))
     }
-    setShowItemModal(false)
-    setEditingItem(null)
   }
 
   const handleDeleteItem = (itemId) => {
@@ -153,8 +263,8 @@ export default function CollectionManager() {
     }
   }
 
-  const handleAddCollection = async (name, parentId) => {
-    await addCollection(name, parentId || null)
+  const handleAddCollection = async (config) => {
+    await addCollection(config)
     setShowCollectionModal(false)
     setNewCollectionParent(null)
   }
@@ -200,8 +310,54 @@ export default function CollectionManager() {
 
     const renderFieldInput = (field) => {
       const value = formData.fields?.[field.key] ?? ''
+      const fieldTypeConfig = field.fieldType || (field.options ? 'select' : 'input')
+      const inputType = field.inputType || 'str'
+      
+      // 커스텀 필드 타입 설정이 있으면 우선 사용
+      if (fieldTypeConfig === 'select' && field.options && field.options.length > 0) {
+        return (
+          <select
+            value={value}
+            onChange={(e) => setFieldValue(field.key, e.target.value)}
+            className="w-full px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 focus:outline-none focus:border-cyan-500"
+          >
+            <option value="">선택</option>
+            {field.options.map((opt) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        )
+      }
+      
+      if (fieldTypeConfig === 'input') {
+        if (inputType === 'int') {
+          return (
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={value}
+              onChange={(e) => setFieldValue(field.key, e.target.value)}
+              placeholder="정수 입력"
+              className="w-full px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+            />
+          )
+        } else {
+          return (
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => setFieldValue(field.key, e.target.value)}
+              placeholder="텍스트 입력"
+              className="w-full px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+            />
+          )
+        }
+      }
+      
       if (field.type === 'grade') {
         const [gradeOrg = '', gradeNum = ''] = String(value).split(/\s+/)
+        const gradeOptions = field.options || GRADE_OPTIONS
         return (
           <div key={field.key} className="flex gap-2">
             <select
@@ -212,7 +368,7 @@ export default function CollectionManager() {
               className="flex-1 px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 focus:outline-none focus:border-cyan-500"
             >
               <option value="">선택</option>
-              {GRADE_OPTIONS.map((o) => (
+              {gradeOptions.map((o) => (
                 <option key={o} value={o}>{o}</option>
               ))}
             </select>
@@ -254,6 +410,7 @@ export default function CollectionManager() {
         )
       }
       if (field.type === 'language') {
+        const languageOptions = field.options || LANGUAGE_OPTIONS
         return (
           <select
             value={value}
@@ -261,7 +418,7 @@ export default function CollectionManager() {
             className="w-full px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 focus:outline-none focus:border-cyan-500"
           >
             <option value="">선택</option>
-            {LANGUAGE_OPTIONS.map((opt) => (
+            {languageOptions.map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
@@ -277,6 +434,57 @@ export default function CollectionManager() {
             maxLength={50}
             className="w-full px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
           />
+        )
+      }
+      if (field.type === 'series') {
+        // localStorage에서 최근 입력값 가져오기
+        const getRecentSeries = () => {
+          const stored = localStorage.getItem('recentSeries')
+          if (stored) {
+            try {
+              return JSON.parse(stored)
+            } catch {
+              return []
+            }
+          }
+          return []
+        }
+        
+        const saveRecentSeries = (seriesValue) => {
+          if (!seriesValue) return
+          const recent = getRecentSeries()
+          const updated = [seriesValue, ...recent.filter(s => s !== seriesValue)].slice(0, 10) // 최대 10개
+          localStorage.setItem('recentSeries', JSON.stringify(updated))
+        }
+        
+        const recentSeries = getRecentSeries()
+        const listId = `series-list-${field.key}`
+        return (
+          <div key={field.key}>
+            <input
+              type="text"
+              list={listId}
+              value={value}
+              onChange={(e) => {
+                setFieldValue(field.key, e.target.value)
+                if (e.target.value.trim()) {
+                  saveRecentSeries(e.target.value.trim())
+                }
+              }}
+              onBlur={(e) => {
+                if (e.target.value.trim()) {
+                  saveRecentSeries(e.target.value.trim())
+                }
+              }}
+              placeholder="시리즈 입력"
+              className="w-full px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+            />
+            <datalist id={listId}>
+              {recentSeries.map((series, idx) => (
+                <option key={idx} value={series} />
+              ))}
+            </datalist>
+          </div>
         )
       }
       return (
@@ -486,6 +694,7 @@ export default function CollectionManager() {
   const CollectionEditModal = () => {
     const col = collections[selectedCollection]
     const [name, setName] = useState(col?.name || '')
+    const [groupId, setGroupId] = useState(col?.groupId || null)
     const [thumbnailType, setThumbnailType] = useState(col?.thumbnailType || 'icon')
     const [thumbnail, setThumbnail] = useState(col?.thumbnail || '')
     const [iconId, setIconId] = useState(col?.iconId || 'folder')
@@ -511,6 +720,7 @@ export default function CollectionManager() {
     useEffect(() => {
       if (col) {
         setName(col.name || '')
+        setGroupId(col.groupId || null)
         setThumbnailType(col.thumbnailType || 'icon')
         setThumbnail(col.thumbnail || '')
         setIconId(col.iconId || 'folder')
@@ -576,6 +786,7 @@ export default function CollectionManager() {
 
       handleUpdateCollection({
         name: name.trim(),
+        groupId: groupId || null,
         thumbnail: thumbnailType === 'image' ? thumbnail : '',
         thumbnailType,
         iconId,
@@ -615,6 +826,26 @@ export default function CollectionManager() {
                 autoFocus
                 className="w-full px-4 py-3 rounded-xl border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
               />
+            </div>
+
+            {/* 그룹 선택 */}
+            <div>
+              <label className="block text-sm font-semibold text-zinc-300 mb-2">그룹 (선택사항)</label>
+              <select
+                value={groupId || ''}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setGroupId(val || null)
+                }}
+                className="w-full px-4 py-3 rounded-xl border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 focus:outline-none focus:border-cyan-500"
+              >
+                <option value="">그룹 지정 안함</option>
+                {Object.values(groups || {}).map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {group.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -815,6 +1046,10 @@ export default function CollectionManager() {
 
   const CollectionModal = () => {
     const [name, setName] = useState('')
+    const [groupId, setGroupId] = useState(null)
+    const [newGroupName, setNewGroupName] = useState('')
+    const [newGroupColor, setNewGroupColor] = useState('#3b82f6')
+    const [showNewGroupInput, setShowNewGroupInput] = useState(false)
     const [thumbnailType, setThumbnailType] = useState('icon')
     const [thumbnail, setThumbnail] = useState('')
     const [iconId, setIconId] = useState('folder')
@@ -851,11 +1086,28 @@ export default function CollectionManager() {
       ...customFields,
     ]
 
-    const handleSubmit = () => {
+    const handleCreateGroup = async () => {
+      if (!newGroupName.trim()) return
+      const newGroupId = await addGroup(newGroupName.trim(), newGroupColor)
+      if (newGroupId) {
+        setGroupId(newGroupId)
+        setNewGroupName('')
+        setNewGroupColor('#3b82f6')
+        setShowNewGroupInput(false)
+      }
+    }
+
+    const handleSubmit = async () => {
       if (!name.trim()) return
+      // 새 그룹이 입력 중이면 먼저 생성
+      let finalGroupId = groupId
+      if (showNewGroupInput && newGroupName.trim()) {
+        finalGroupId = await addGroup(newGroupName.trim(), newGroupColor)
+        if (!finalGroupId) return
+      }
       handleAddCollection({
         name: name.trim(),
-        parentId: newCollectionParent,
+        groupId: finalGroupId,
         thumbnail: thumbnailType === 'image' ? thumbnail : '',
         thumbnailType,
         iconId,
@@ -895,6 +1147,73 @@ export default function CollectionManager() {
                 autoFocus
                 className="w-full px-4 py-3 rounded-xl border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
               />
+            </div>
+
+            {/* 그룹 선택 */}
+            <div>
+              <label className="block text-sm font-semibold text-zinc-300 mb-2">그룹 (선택사항)</label>
+              {!showNewGroupInput ? (
+                <div className="flex gap-2">
+                  <select
+                    value={groupId || ''}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setGroupId(val || null)
+                    }}
+                    className="flex-[0.7] px-4 py-3 rounded-xl border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="">그룹 지정 안함</option>
+                    {Object.values(groups || {}).map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewGroupInput(true)}
+                    className="flex-[0.3] px-4 py-3 rounded-xl border-2 border-dashed border-zinc-600 text-zinc-400 hover:border-zinc-500 hover:text-zinc-300 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Plus size={16} />
+                    추가하기
+                  </button>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-zinc-700/30 border border-zinc-600 space-y-3">
+                  <input
+                    type="text"
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder="그룹 이름"
+                    className="w-full px-4 py-2 rounded-lg border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                  />
+                  <ColorPicker
+                    value={newGroupColor}
+                    onChange={setNewGroupColor}
+                    label="그룹 색상"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCreateGroup}
+                      className="flex-1 px-4 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 transition-colors"
+                    >
+                      그룹 생성
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowNewGroupInput(false)
+                        setNewGroupName('')
+                        setNewGroupColor('#3b82f6')
+                      }}
+                      className="px-4 py-2 rounded-lg bg-zinc-700/50 text-zinc-400 hover:bg-zinc-600 transition-colors"
+                    >
+                      취소
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>
@@ -1073,6 +1392,11 @@ export default function CollectionManager() {
     )
   }
 
+  // 로그인하지 않은 경우 로그인 페이지로 리다이렉트
+  if (authReady && !userId) {
+    return null // App.jsx에서 리다이렉트 처리
+  }
+
   return (
     <div className="h-screen flex bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-800 text-zinc-100">
       {error && (
@@ -1083,6 +1407,7 @@ export default function CollectionManager() {
 
       <Sidebar
         collections={collections}
+        groups={groups}
         selectedCollection={selectedCollection}
         expandedCollections={expandedCollections}
         showProfileView={showProfileView}
@@ -1095,9 +1420,63 @@ export default function CollectionManager() {
           setNewCollectionParent(null)
           setShowCollectionModal(true)
         }}
-        onAddSubCollection={(parentId) => {
-          setNewCollectionParent(parentId)
-          setShowCollectionModal(true)
+        onOpenCollectionEdit={(collectionId) => {
+          setSelectedCollection(collectionId)
+          setShowCollectionEditModal(true)
+        }}
+        onOpenCollectionDelete={(collectionId) => {
+          setSelectedCollection(collectionId)
+          setShowCollectionDeleteModal(true)
+        }}
+        onOpenCollectionGroupSelect={(collectionId) => {
+          setGroupSelectCollectionId(collectionId)
+          setShowCollectionGroupModal(true)
+        }}
+        onUpdateCollectionOrder={async (draggedId, targetId, groupCollections, newOrder) => {
+          // 모든 컬렉션의 order 업데이트
+          const updates = groupCollections.map((col, index) => {
+            const newOrderValue = newOrder[index]
+            if (col.order !== newOrderValue) {
+              return updateCollection(col.id, { order: newOrderValue })
+            }
+            return Promise.resolve()
+          })
+          await Promise.all(updates)
+        }}
+        onUpdateCollectionGroup={async (collectionId, groupId) => {
+          console.log('onUpdateCollectionGroup 호출:', collectionId, groupId)
+          // 컬렉션의 그룹 변경
+          const collection = collections[collectionId]
+          if (!collection) {
+            console.error('컬렉션을 찾을 수 없음:', collectionId)
+            return
+          }
+
+          try {
+            // 기존 그룹에서 제거
+            if (collection.groupId) {
+              const oldGroup = groups[collection.groupId]
+              if (oldGroup) {
+                const newCollections = (oldGroup.collections || []).filter(id => id !== collectionId)
+                await updateGroup(collection.groupId, { collections: newCollections })
+              }
+            }
+
+            // 새 그룹에 추가
+            if (groupId) {
+              const newGroup = groups[groupId]
+              if (newGroup) {
+                const newCollections = [...(newGroup.collections || []), collectionId]
+                await updateGroup(groupId, { collections: newCollections })
+              }
+            }
+
+            // 컬렉션의 groupId 업데이트
+            await updateCollection(collectionId, { groupId: groupId || null })
+            console.log('그룹 업데이트 완료')
+          } catch (error) {
+            console.error('그룹 업데이트 오류:', error)
+          }
         }}
         onProfileClick={() => setShowProfileView(true)}
       />
@@ -1105,6 +1484,10 @@ export default function CollectionManager() {
       <main className="flex-1 flex flex-col overflow-hidden">
         <MainContent
           showProfileView={showProfileView}
+          userId={userId}
+          user={user}
+          userProfile={userProfile}
+          onUpdateUserProfile={updateUserProfile}
           selectedCollection={selectedCollection}
           currentCollection={currentCollection}
           displayedItems={displayedItems}
@@ -1117,17 +1500,26 @@ export default function CollectionManager() {
           onAddMultiple={addNewItem}
           onOpenCollectionEdit={() => setShowCollectionEditModal(true)}
           onOpenCollectionDelete={() => setShowCollectionDeleteModal(true)}
-          onShareCollection={async () => {
-            if (!selectedCollection || !currentCollection || !userId) return
-            try {
-              const { url } = await createShare(userId, currentCollection, displayedItems)
-              await navigator.clipboard.writeText(url)
-              setShareToast('링크가 복사되었습니다 (30일 후 자동 삭제)')
-              setTimeout(() => setShareToast(null), 2500)
-            } catch (e) {
-              setShareToast(e?.message || '공유 링크 생성 실패')
-              setTimeout(() => setShareToast(null), 3000)
+          onUpdateCollection={updateCollection}
+          items={items}
+          deleteAllUserData={deleteAllUserData}
+          onShareCollection={async (fieldVisibility) => {
+            if (!selectedCollection || !currentCollection || !userId) {
+              throw new Error('컬렉션을 선택하거나 로그인해주세요.')
             }
+            const { collectionId, url } = await createShare(
+              userId, 
+              selectedCollection, 
+              { ...currentCollection, fieldVisibility },
+              displayedItems
+            )
+            // 개인 컬렉션에 shareCollectionId 저장 (다음에 재사용하기 위해)
+            if (collectionId && collectionId !== currentCollection.shareCollectionId) {
+              await updateCollection(selectedCollection, {
+                shareCollectionId: collectionId,
+              })
+            }
+            return { collectionId, url }
           }}
           onEditItem={(item) => {
             setEditingItem(item)
@@ -1154,6 +1546,8 @@ export default function CollectionManager() {
             setSearchQuery('')
             setShowSearchInput(false)
           }}
+          filters={filters}
+          onFiltersChange={setFilters}
         />
       </main>
 
@@ -1161,11 +1555,88 @@ export default function CollectionManager() {
       {showCollectionModal && <CollectionModal />}
       {showCollectionEditModal && selectedCollection && <CollectionEditModal />}
       {showCollectionDeleteModal && selectedCollection && <CollectionDeleteModal />}
+      {showCollectionGroupModal && groupSelectCollectionId && (
+        <CollectionGroupSelectModal
+          collectionId={groupSelectCollectionId}
+          currentGroupId={collections[groupSelectCollectionId]?.groupId || null}
+          groups={groups}
+          onClose={() => {
+            setShowCollectionGroupModal(false)
+            setGroupSelectCollectionId(null)
+          }}
+          onSelect={async (groupId) => {
+            await updateCollection(groupSelectCollectionId, { groupId: groupId || null })
+            setShowCollectionGroupModal(false)
+            setGroupSelectCollectionId(null)
+          }}
+        />
+      )}
       {shareToast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[1000] px-6 py-3 rounded-xl bg-zinc-800 border border-zinc-600 shadow-xl text-zinc-100 font-medium">
           {shareToast}
         </div>
       )}
+    </div>
+  )
+}
+
+// 그룹 선택 모달
+function CollectionGroupSelectModal({ collectionId, currentGroupId, groups, onClose, onSelect }) {
+  const [selectedGroupId, setSelectedGroupId] = useState(currentGroupId)
+
+  const handleSubmit = () => {
+    onSelect(selectedGroupId)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-zinc-900/70 backdrop-blur-sm flex items-center justify-center z-[1000]"
+      onClick={onClose}
+    >
+      <div
+        className="bg-zinc-800 rounded-2xl w-[90%] max-w-[400px] shadow-2xl shadow-black/50 flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 py-5 border-b border-zinc-600/50 flex justify-between items-center">
+          <h2 className="text-xl font-bold text-zinc-100">그룹 선택</h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          <select
+            value={selectedGroupId || ''}
+            onChange={(e) => setSelectedGroupId(e.target.value || null)}
+            className="w-full px-4 py-3 rounded-xl border-2 border-zinc-600 bg-zinc-700/50 text-zinc-100 focus:outline-none focus:border-cyan-500"
+          >
+            <option value="">그룹 지정 안함</option>
+            {Object.values(groups || {}).map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="px-6 py-5 border-t border-zinc-600/50 flex gap-3 justify-end">
+          <button
+            onClick={onClose}
+            className="px-6 py-2 rounded-xl bg-zinc-700/50 text-zinc-300 font-medium hover:bg-zinc-600 transition-colors"
+          >
+            취소
+          </button>
+          <button
+            onClick={handleSubmit}
+            className="px-6 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 text-white font-medium shadow-lg shadow-cyan-500/25 hover:shadow-cyan-500/40 transition-all"
+          >
+            적용
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

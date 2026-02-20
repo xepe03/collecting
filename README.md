@@ -24,16 +24,41 @@ VITE_FIREBASE_APP_ID=...
 ### 3. Firestore 보안 규칙
 - **Firestore Database** → **규칙** 탭 (프로젝트 루트 `firestore.rules` 참고)
 
+권한 모델:
+- **Owner**: read + write
+- **Others (로그인X 포함)**: read only (단, `visibility: "public"`일 때만)
+- **Private 컬렉션**: 오너만 read
+
 ```
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /shared/{token} {
-      allow read: if true;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+    // 공유 컬렉션 (실시간 동기화)
+    match /collections/{collectionId} {
+      // 오너만 write
+      allow write: if request.auth != null && request.auth.uid == resource.data.ownerUid;
+      // public이면 누구나 read (로그인 여부 상관 없음)
+      // private이면 오너만 read
+      allow read: if resource.data.visibility == 'public' 
+        || (request.auth != null && request.auth.uid == resource.data.ownerUid);
     }
-    match /users/{userId}/{document=**} {
+    
+    // 공유 컬렉션의 아이템들
+    match /collections/{collectionId}/items/{itemId} {
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/collections/$(collectionId)).data.ownerUid == request.auth.uid;
+      allow read: if get(/databases/$(database)/documents/collections/$(collectionId)).data.visibility == 'public'
+        || (request.auth != null && 
+          get(/databases/$(database)/documents/collections/$(collectionId)).data.ownerUid == request.auth.uid);
+    }
+    
+    // 사용자별 개인 컬렉션
+    match /users/{userId}/collections/{collectionId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // 사용자별 개인 아이템
+    match /users/{userId}/items/{itemId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
@@ -41,12 +66,18 @@ service cloud.firestore {
 ```
 
 ### 4. Storage 보안 규칙 (이미지/파일 업로드)
-- **Storage** → **규칙** 탭
+- **Storage** → **규칙** 탭에서 아래 규칙을 복사하여 붙여넣기
+- 또는 Firebase CLI 사용: `firebase deploy --only storage`
+
+**⚠️ 중요: Storage가 활성화되어 있어야 합니다!**
+- Firebase 콘솔 → **Storage** → **시작하기** 클릭
+- 프로덕션 모드로 시작 (테스트 모드 아님)
 
 ```
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    // 사용자별 업로드 파일
     match /users/{userId}/{allPaths=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
@@ -54,11 +85,30 @@ service firebase.storage {
 }
 ```
 
+프로젝트 루트에 `storage.rules` 파일이 있으니 참고하세요.
+
 ### 5. 데이터 구조
-- `users/{userId}/collections/{collectionId}` - 컬렉션 (name, parentId, children[], items[])
-- `users/{userId}/items/{itemId}` - 아이템 (name, image, fields{}, files[])
-- `shared/{token}` - 공유 스냅샷 (읽기 전용, 링크로 접근)
-- 업로드 파일: `users/{userId}/uploads/{timestamp}_{filename}` (Firebase Storage)
+
+**개인 컬렉션:**
+- `users/{userId}/collections/{collectionId}` - 컬렉션
+  - 필드: `name`, `parentId`, `children[]`, `items[]`, `ownerUid`, `visibility` ('public' | 'private'), `updatedAt`, `thumbnail`, `thumbnailType`, `iconId`, `tag`, `memo`, `itemFields[]`
+- `users/{userId}/items/{itemId}` - 아이템
+  - 필드: `name`, `image`, `fields{}`, `files[]`
+
+**공유 컬렉션 (실시간 동기화):**
+- `collections/{collectionId}` - 공유 컬렉션
+  - 필드: `ownerUid`, `visibility` ('public' | 'private'), `name`, `itemFields[]`, `updatedAt`, 기타 컬렉션 메타데이터
+- `collections/{collectionId}/items/{itemId}` - 공유 컬렉션의 아이템들
+  - 필드: `name`, `image`, `fields{}`
+
+**파일 업로드:**
+- `users/{userId}/uploads/{timestamp}_{filename}` (Firebase Storage)
+
+**권한 모델:**
+- 컬렉션 문서에 `ownerUid`와 `visibility` 필드만 있으면 됨
+- 오너만 write 가능
+- `visibility: "public"`이면 누구나 read (로그인 여부 상관 없음)
+- `visibility: "private"`이면 오너만 read
 
 유저별로 데이터가 분리되어 있어, 나중에 Google 로그인 추가 시 `request.auth.uid`로 자동 연결됩니다.
 
